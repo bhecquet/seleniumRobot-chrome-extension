@@ -640,6 +640,15 @@ window.addEventListener('blur', () => {
 }, {once: false});
 
 
+/**** action iframe path******/
+
+function sendAction(el, command, extra = {}) {
+    const framePath = getFramePath();
+    const base = buildActionData(el, command);
+    sendToServer({...base, framePath, ...extra});
+}
+
+
 /* -------- CLICK : dédoublonnage + envoi serveur (compatible plugin) -------- */
 document.body.addEventListener('click', function (event) {
     const el = turnIntoParentAsNeeded(event.target);
@@ -666,7 +675,7 @@ document.body.addEventListener('click', function (event) {
     };
 
     sendToServer(actionData);
-    console.log('CLICK FRAME PATH =', framePath);
+    // console.log('CLICK FRAME PATH =', framePath);
     document.recorded_actions.push(['click', getBestSelector(el), el.href || '', t]);
     saveRecordedActions();
 });
@@ -804,11 +813,10 @@ document.body.addEventListener('change', function (event) {
         var optValue = el_computed.value;
 
         // Envoi serveur compatible plugin: command "change"
-        const actionData = buildActionData(el, 'change');
-        // Si value vide (France), on met le texte en value pour que le plugin génère
-        actionData.value = (optValue && optValue.length > 0) ? optValue : optText;
-        actionData.selectedText = optText;
-        sendToServer(actionData);
+        sendAction(el, 'change', {
+            value: (optValue && optValue.length > 0) ? optValue : optText,
+            selectedText: optText
+        });
 
         // Local
         document.recorded_actions.push(['s_opt', selector, optText, d_now]);
@@ -818,10 +826,7 @@ document.body.addEventListener('change', function (event) {
 
     // checkbox
     if (tag_name === 'input' && e_type === 'checkbox') {
-        const actionData = buildActionData(el, 'change');
-        actionData.value = el.checked ? 'yes' : 'no';
-        actionData.checked = el.checked;
-        sendToServer(actionData);
+        sendAction(el, 'change', {value: el.checked ? 'yes' : 'no'});
 
         // Local
         if (ra_len > 0 &&
@@ -1050,6 +1055,7 @@ function scheduleFinalInput(el) {
     }, INPUT_DEBOUNCE_MS));
 }
 
+
 function flushFinalInput(el) {
     if (!isEditableInput(el)) return;
     if (el.hasAttribute('readonly')) return;
@@ -1064,13 +1070,11 @@ function flushFinalInput(el) {
     const value = el.value;
     if (lastSentValue.get(key) === value) return;
 
-    // IMPORTANT: On garde command "keyup" car ton plugin sait transformer.
-    const actionData = buildActionData(el, 'keyup');
-    actionData.value = value;
-    sendToServer(actionData);
+    sendAction(el, 'keyup', {value});
 
     lastSentValue.set(key, value);
 }
+
 
 // écoute sur input (plus fiable que keyup)
 document.addEventListener('input', function (event) {
