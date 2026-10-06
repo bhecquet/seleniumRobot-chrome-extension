@@ -1,5 +1,5 @@
 /* ======================== SELECTORS ======================== */
-
+document.documentElement.setAttribute('data-recorder-loaded', 'true');
 var cssPathById = function (el) {
     if (!(el instanceof Element)) return;
     var path = [];
@@ -8,7 +8,6 @@ var cssPathById = function (el) {
         if (el.id) {
             var elid = el.id;
 
-            // Si id non safe en CSS -> fallback attribut [id="..."]
             if (/\s/.test(elid) || elid.includes(',') || elid.includes('.') ||
                 elid.includes('(') || elid.includes(':') || hasDigit(elid[0])) {
                 return cssPathByAttribute(el, 'id');
@@ -104,8 +103,34 @@ function hasDigit(str) {
     return /\d/.test(str);
 }
 
-function isGen(str) {
-    return /[_-]\d/.test(str) || /\d[a-z]/.test(str);
+function isDynamicId(id) {
+    if (!id) {
+        return true;
+    }
+
+    const value = id.trim();
+
+    if (
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+    ) {
+        return true;
+    }
+
+    if (
+        /^(mat-|cdk-|ng-|ember-|react-|vue-)/i.test(value)
+    ) {
+        return true;
+    }
+
+    if (/\d{8,}/.test(value)) {
+        return true;
+    }
+
+    if (/^[0-9a-f]{16,}$/i.test(value)) {
+        return true;
+    }
+
+    return false;
 }
 
 function tagName(el) {
@@ -125,42 +150,236 @@ function turnIntoParentAsNeeded(el) {
     return el;
 }
 
-/* ======================== ENVOI SERVEUR ======================== */
+function normalizeClickTarget(el) {
+    if (!el || !(el instanceof Element)) {
+        return el;
+    }
 
-function sendToServer(actionData) {
-    fetch('http://localhost:5222/event', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(actionData)
-    })
-        .then(response => response.text())
-        .then(data => console.log('Action envoyée au serveur Jetty :', actionData.command, data))
-        .catch(error => console.error('Erreur d\'envoi :', error));
+    if (el.tagName === 'IMG') {
+        const a = el.closest('a[href]');
+        if (a) return a;
+    }
+
+    if (
+        el.tagName === 'LABEL' ||
+        (el.tagName === 'SPAN' && el.parentElement && el.parentElement.tagName === 'LABEL')
+    ) {
+        const label = el.tagName === 'LABEL' ? el : el.parentElement;
+
+        const forId = label.getAttribute('for');
+        if (forId) {
+            const input = document.getElementById(forId);
+            if (input) return input;
+        }
+
+        const next = label.nextElementSibling;
+        if (
+            next &&
+            next instanceof Element &&
+            next.tagName === 'INPUT' &&
+            (next.type === 'radio' || next.type === 'checkbox')
+        ) {
+            return next;
+        }
+
+    }
+
+    if (['SVG', 'PATH', 'I', 'SPAN'].includes(el.tagName)) {
+        const clickable = el.closest('button, a[href], [role="button"], [role="link"]');
+        if (clickable) return clickable;
+    }
+
+    const role = el.getAttribute('role');
+    if (role === 'button' || role === 'link') {
+        return el;
+    }
+
+    if (typeof el.onclick === 'function') {
+        return el;
+    }
+
+    const clickableParent = el.closest(
+        'a[href], button, input[type="button"], input[type="submit"], [role="button"], [role="link"]'
+    );
+    if (clickableParent) {
+        return clickableParent;
+    }
+
+    if (el.closest('.context-menu, [role="menu"]')) {
+        const menuItem = el.closest('[role="menuitem"], li, button, a');
+        if (menuItem) return menuItem;
+    }
+
+    return el;
+
 }
 
-/*========================= HIERARCHIE DES IFRAMES ===============================*/
+function findClickableAncestor(el) {
+    let cur = el;
 
+    while (cur && cur !== document.body) {
+
+        if (cur.tagName === 'INPUT' &&
+            ['button', 'submit', 'radio', 'checkbox'].includes(cur.type)) {
+            return cur;
+        }
+
+        if (cur.tagName === 'A' && cur.href) return cur;
+
+        if (cur.tagName === 'BUTTON') return cur;
+
+        const role = cur.getAttribute && cur.getAttribute('role');
+        if (role === 'button' || role === 'link' || role === 'menuitem') return cur;
+
+        if (typeof cur.onclick === 'function' &&
+            !['FORM', 'DIV', 'SECTION', 'MAIN'].includes(cur.tagName)) {
+            return cur;
+        }
+
+        cur = cur.parentElement;
+    }
+
+    return el;
+}
+
+/* ========================  SERVER ======================== */
+
+let serverRequestQueue = Promise.resolve();
+
+function sendToServer(actionData) {
+    serverRequestQueue = serverRequestQueue
+        .then(() => fetch('http://localhost:5222/event', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(actionData)
+        }))
+        .then(response => response.text())
+        .then(data => console.log('Action envoyée au serveur Jetty :', actionData.command, data))
+        .catch(error => console.error('Erreur d’envoi :', actionData.command, error));
+
+    return serverRequestQueue;
+}
+
+/*=========================  IFRAMES ===============================*/
+
+function getFrameElementSelector(frameElement) {
+    if (!(frameElement instanceof Element)) {
+        return null;
+    }
+
+    const ownerDocument =
+        frameElement.ownerDocument;
+
+    if (
+        frameElement.id
+        && !isDynamicId(frameElement.id)
+    ) {
+        const idSelector =
+            safeCssIdSelector(frameElement.id);
+
+        try {
+            const matches =
+                ownerDocument.querySelectorAll(
+                    idSelector
+                );
+
+            if (
+                matches.length === 1
+                && matches[0] === frameElement
+            ) {
+                return idSelector;
+            }
+        } catch (error) {
+            console.warn(
+                '[Recorder] Invalid frame ID selector',
+                error
+            );
+        }
+    }
+
+    const frameName =
+        frameElement.getAttribute('name');
+
+    if (frameName) {
+        const nameSelector =
+            'iframe[name="'
+            + escapeCssAttribute(frameName)
+            + '"]';
+
+        try {
+            const matches =
+                ownerDocument.querySelectorAll(
+                    nameSelector
+                );
+
+            if (
+                matches.length === 1
+                && matches[0] === frameElement
+            ) {
+                return nameSelector;
+            }
+        } catch (error) {
+            console.warn(
+                '[Recorder] Invalid frame name selector',
+                error
+            );
+        }
+    }
+
+    const frameTitle = frameElement.getAttribute('title');
+
+    if (frameTitle) {
+        const titleSelector = 'iframe[title="' + escapeCssAttribute(frameTitle) + '"]';
+        try {
+            const matches = ownerDocument.querySelectorAll(titleSelector);
+            if (
+                matches.length === 1
+                && matches[0] === frameElement
+            ) {
+                return titleSelector;
+            }
+        } catch (error) {
+            console.warn(
+                '[Recorder] Invalid frame title selector',
+                error
+            );
+        }
+    }
+
+    return null;
+}
 
 function getFramePath() {
-    let path = [];
-    let frame = window.frameElement;
+    const path = [];
+    let currentWindow = window;
 
-    while (frame) {
+    while (currentWindow !== currentWindow.top) {
+        try {
+            const frameElement = currentWindow.frameElement;
 
-        path.unshift({
-            id: frame.id || null,
-            name: frame.name || null,
-            title: frame.title || null,
-            selector: getBestSelector(frame)
-        });
+            if (!frameElement) {
+                break;
+            }
 
-        // Remonter au parent
-        frame = frame.ownerDocument.defaultView.frameElement;
+            path.unshift({
+                id:
+                    frameElement.id || null,
+                name:
+                    frameElement.getAttribute('name') || null,
+                title:
+                    frameElement.getAttribute('title') || null,
+                selector:
+                    getFrameElementSelector(frameElement)
+            });
+            currentWindow = currentWindow.parent;
+        } catch (error) {
+            console.warn('[Recorder] Unable to access ' + 'the parent frame', error);
+            break;
+        }
     }
 
     return path;
 }
-
 
 /* ======================== BEST SELECTOR ======================== */
 
@@ -169,15 +388,26 @@ var getBestSelector = function (el) {
     el = turnIntoParentAsNeeded(el);
 
     var sel_by_id = cssPathById(el) || '';
-    // si id direct et non généré => bon
-    if (sel_by_id && !sel_by_id.includes(' > ') && !isGen(sel_by_id)) return sel_by_id;
+
+    if (el.id && !isDynamicId(el.id) && sel_by_id && !sel_by_id.includes(' > ')) {
+        return sel_by_id;
+    }
 
     var child_count_by_id = sel_by_id ? ssOccurrences(sel_by_id, ' > ') : 999;
     var selector_by_class = cssPathByClass(el) || '';
     var tag_name = tagName(el);
 
     var non_id_attributes = [];
+
+    non_id_attributes.push('data-testid');
+    non_id_attributes.push('data-test');
+    non_id_attributes.push('data-cy');
+    non_id_attributes.push('formcontrolname');
     non_id_attributes.push('name');
+    non_id_attributes.push('aria-label');
+    non_id_attributes.push('aria-labelledby');
+    non_id_attributes.push('placeholder');
+    non_id_attributes.push('data-auto');
     non_id_attributes.push('data-qa');
     non_id_attributes.push('data-tid');
     non_id_attributes.push('data-el');
@@ -185,13 +415,10 @@ var getBestSelector = function (el) {
     non_id_attributes.push('data-name');
     non_id_attributes.push('data-auto');
     non_id_attributes.push('data-text');
-    non_id_attributes.push('data-test');
-    non_id_attributes.push('data-testid');
     non_id_attributes.push('data-test-id');
     non_id_attributes.push('data-test-selector');
     non_id_attributes.push('data-nav');
     non_id_attributes.push('data-sb');
-    non_id_attributes.push('data-cy');
     non_id_attributes.push('data-action');
     non_id_attributes.push('data-target');
     non_id_attributes.push('data-tooltip');
@@ -199,7 +426,6 @@ var getBestSelector = function (el) {
     non_id_attributes.push('title');
     non_id_attributes.push('heading');
     non_id_attributes.push('translate');
-    non_id_attributes.push('aria-label');
     non_id_attributes.push('aria-describedby');
     non_id_attributes.push('rel');
     non_id_attributes.push('ng-model');
@@ -211,7 +437,6 @@ var getBestSelector = function (el) {
     non_id_attributes.push('data-for');
     non_id_attributes.push('class');
     non_id_attributes.push('for');
-    non_id_attributes.push('placeholder');
     non_id_attributes.push('value');
     non_id_attributes.push('ng-click');
     non_id_attributes.push('ng-if');
@@ -222,7 +447,6 @@ var getBestSelector = function (el) {
     var num_by_attr = [];
     var child_count_by_attr = [];
 
-    // 1) attribut unique court => direct
     for (var i = 0; i < non_id_attributes.length; i++) {
         var n_i_attr = non_id_attributes[i];
         selector_by_attr[i] = null;
@@ -235,7 +459,7 @@ var getBestSelector = function (el) {
         try {
             all_by_attr[i] = document.querySelectorAll(selector_by_attr[i]);
         } catch (e) {
-            // selector invalide => on ignore
+
             all_by_attr[i] = [];
             continue;
         }
@@ -253,17 +477,12 @@ var getBestSelector = function (el) {
         child_count_by_attr[i] = ssOccurrences(selector_by_attr[i], ' > ');
     }
 
-    // tags de base uniques
     var basic_tags = ['h1', 'h2', 'h3', 'canvas', 'center', 'input', 'textarea'];
     for (var b = 0; b < basic_tags.length; b++) {
         var d_qsa = document.querySelectorAll(basic_tags[b]);
         if (tag_name === basic_tags[b] && d_qsa.length === 1 && el === d_qsa[0]) return basic_tags[b];
     }
 
-    //  IMPORTANT : on ne renvoie plus :contains() car PAS CSS standard
-
-
-    //  sinon choisir le selector le plus court (moins de niveaux)
     var best_selector = sel_by_id || selector_by_class || tag_name;
     var lowest_child_count = child_count_by_id;
 
@@ -283,7 +502,6 @@ var getBestSelector = function (el) {
 
     best_selector = (best_selector || '').replaceAll('html > body', 'body');
 
-    // tentative de simplification (sans casser)
     var selector = best_selector.replaceAll(' > ', ' ');
     selector = selector.replaceAll(' div ', ' ');
     try {
@@ -294,75 +512,393 @@ var getBestSelector = function (el) {
     return best_selector;
 };
 
-
 /* ======================== ENHANCED SELECTOR / XPATH  ======================== */
 
 function safeCssIdSelector(id) {
     if (!id) return null;
-    // CSS.escape si dispo
+
     if (window.CSS && typeof window.CSS.escape === 'function') {
         return `#${CSS.escape(id)}`;
     }
-    // fallback si caractères spéciaux
+
     if (/\s/.test(id) || id.includes(',') || id.includes('.') || id.includes('(') || id.includes(':')) {
         return null;
     }
     return `#${id}`;
 }
 
+function escapeCssAttribute(value) {
+    return String(value)
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"');
+}
+
+function isUniqueCssSelector(selector, expectedElement) {
+    if (!selector || !(expectedElement instanceof Element)) {
+        return false;
+    }
+
+    try {
+        const matches = document.querySelectorAll(selector);
+
+        return matches.length === 1 &&
+            matches[0] === expectedElement;
+    } catch (error) {
+        return false;
+    }
+}
+
 function getEnhancedSelector(el) {
     el = turnIntoParentAsNeeded(el);
 
-    if (el.getAttribute('data-testid')) return `[data-testid="${el.getAttribute('data-testid')}"]`;
-
-    if (el.id) {
-        var idSel = safeCssIdSelector(el.id);
-        if (idSel) return idSel;
-        return cssPathByAttribute(el, 'id'); // fallback safe
+    if (!(el instanceof Element)) {
+        return null;
     }
 
-    if (el.getAttribute('name')) return `${tagName(el)}[name="${el.getAttribute('name').replaceAll('"', '\\"')}"]`;
-    if (el.getAttribute('aria-label')) return `[aria-label="${el.getAttribute('aria-label').replaceAll('"', '\\"')}"]`;
+    const tag = el.tagName.toLowerCase();
+
+    const type = (el.getAttribute('type') || '').toLowerCase();
+
+    if (el.id && !isDynamicId(el.id)) {
+        const idSelector = safeCssIdSelector(el.id);
+
+        if (isUniqueCssSelector(idSelector, el)) {
+            return idSelector;
+        }
+    }
+
+    for (const attributeName of STABLE_DATA_ATTRIBUTES) {
+        const attributeValue =
+            el.getAttribute(attributeName);
+
+        if (!attributeValue) {
+            continue;
+        }
+
+        const selector = '[' + attributeName + '="' + escapeCssAttribute(attributeValue) + '"]';
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    const formControlName = el.getAttribute('formcontrolname');
+
+    if (formControlName) {
+        const selector =
+            `${tag}[formcontrolname="${escapeCssAttribute(formControlName)}"]`;
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    const name = el.getAttribute('name');
+
+    if (name) {
+        const selector =
+            `${tag}[name="${escapeCssAttribute(name)}"]`;
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    const ariaLabel = el.getAttribute('aria-label');
+
+    if (ariaLabel) {
+        const selector =
+            `[aria-label="${escapeCssAttribute(ariaLabel)}"]`;
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    const ariaLabelledBy = el.getAttribute('aria-labelledby');
+
+    if (ariaLabelledBy) {
+        const selector =
+            `[aria-labelledby="${escapeCssAttribute(ariaLabelledBy)}"]`;
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    const placeholder = el.getAttribute('placeholder');
+
+    if (placeholder) {
+        const selector =
+            `${tag}[placeholder="${escapeCssAttribute(placeholder)}"]`;
+
+        if (isUniqueCssSelector(selector, el)) {
+            return selector;
+        }
+    }
+
+    if (
+        tag === 'input' &&
+        (type === 'checkbox' || type === 'radio')
+    ) {
+        const inputName = el.getAttribute('name');
+        const inputValue = el.getAttribute('value');
+
+        if (inputName && inputValue) {
+            const selector =
+                `input[type="${type}"]` +
+                `[name="${escapeCssAttribute(inputName)}"]` +
+                `[value="${escapeCssAttribute(inputValue)}"]`;
+
+            if (isUniqueCssSelector(selector, el)) {
+                return selector;
+            }
+        }
+    }
 
     return getBestSelector(el);
+}
+
+function toXPathLiteral(value) {
+    const text = String(value);
+
+    if (!text.includes('\'')) {
+        return '\'' + text + '\'';
+    }
+    if (!text.includes('"')) {
+        return '"' + text + '"';
+    }
+
+    const parts = text.split('\'');
+
+    return 'concat(' + parts
+        .map(part => '\'' + part + '\'')
+        .join(', "\'", ') + ')';
+}
+
+function isLikelyDynamicText(text) {
+    if (!text) {
+        return true;
+    }
+    const cleaned = text.trim();
+    return cleaned.length > 40 || /\d{5,}/.test(cleaned) || /\d{2}\/\d{2}\/\d{4}/.test(cleaned) || /https?:\/\//i.test(cleaned);
+}
+
+/**
+ * Checks whether an XPath identifies only the expected element.
+ *
+ * @param {string} xpath XPath to verify.
+ * @param {Element} expectedElement Expected element.
+ * @returns {boolean} true when the XPath is unique.
+ */
+function isUniqueXPath(xpath, expectedElement) {
+    if (!xpath || !(expectedElement instanceof Element)) {
+        return false;
+    }
+    try {
+        const result = expectedElement.ownerDocument.evaluate(xpath, expectedElement.ownerDocument, null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null
+        );
+        return result.snapshotLength === 1
+            && result.snapshotItem(0)
+            === expectedElement;
+    } catch (error) {
+        console.warn('[Recorder] Invalid XPath',
+            {
+                xpath: xpath,
+                element: expectedElement,
+                error: error
+            }
+        );
+        return false;
+    }
+};
+
+function buildXPathFromStableParent(el) {
+    let parent = el.parentElement;
+
+    while (parent && parent !== document.body) {
+        if (parent.id && !isDynamicId(parent.id)) {
+            const parentXPath = '//*[@id=' + toXPathLiteral(parent.id) + ']';
+
+            if (!isUniqueXPath(parentXPath, parent)) {
+                parent = parent.parentElement;
+                continue;
+            }
+            const parts = [];
+            let current = el;
+
+            while (current && current !== parent) {
+                const tag = current.tagName.toLowerCase();
+
+                const siblings = current.parentElement ? Array.from(current.parentElement.children)
+                    .filter(node => node.tagName === current.tagName) : [];
+                let part = tag;
+                if (siblings.length > 1) {
+                    part += `[${siblings.indexOf(current) + 1}]`;
+                }
+                parts.unshift(part);
+                current = current.parentElement;
+            }
+            const xpath = `${parentXPath}//${parts.join('/')}`;
+            if (isUniqueXPath(xpath, el)) {
+                return xpath;
+            }
+        }
+
+        parent = parent.parentElement;
+    }
+
+    return null;
 }
 
 function getEnhancedXPath(el) {
     el = turnIntoParentAsNeeded(el);
 
-    if (el.getAttribute('data-testid')) {
-        return `//*[@data-testid='${el.getAttribute('data-testid').replaceAll('\'', '\\\'')}']`;
-    }
-    if (el.id) {
-        return `//*[@id='${el.id.replaceAll('\'', '\\\'')}']`;
-    }
-    if (el.getAttribute('aria-label')) {
-        return `//*[@aria-label='${el.getAttribute('aria-label').replaceAll('\'', '\\\'')}']`;
+    if (!(el instanceof Element)) {
+        return null;
     }
 
-    const text = (el.textContent || '').trim();
-    if (text && text.length < 50 && !text.includes('\n')) {
-        return `//*[normalize-space(.)='${text.replaceAll('\'', '\\\'')}']`;
+    if (el.id && !isDynamicId(el.id)
+    ) {
+        const idXPath = '//*[@id=' + toXPathLiteral(el.id) + ']';
+        if (isUniqueXPath(idXPath, el)) {
+            return idXPath;
+        }
     }
 
-    let parts = [];
-    while (el && el.nodeType === Node.ELEMENT_NODE && el.tagName.toLowerCase() !== 'html') {
-        let tag = el.tagName.toLowerCase();
-        let siblings = Array.from(el.parentNode.children).filter(e => e.tagName === el.tagName);
+    for (
+        const attributeName of STABLE_DATA_ATTRIBUTES) {
+        const attributeValue = el.getAttribute(attributeName);
+
+        if (!attributeValue) {
+            continue;
+        }
+
+        const dataXPath = '//*[@' + attributeName + '=' + toXPathLiteral(attributeValue) + ']';
+
+        if (
+            isUniqueXPath(
+                dataXPath,
+                el
+            )
+        ) {
+            return dataXPath;
+        }
+    }
+    const formControlName = el.getAttribute('formcontrolname');
+    if (formControlName) {
+        const formControlXPath = '//*[@formcontrolname=' + toXPathLiteral(formControlName) + ']';
+        if (isUniqueXPath(formControlXPath, el)
+        ) {
+            return formControlXPath;
+        }
+    }
+
+    const name = el.getAttribute('name');
+
+    if (name) {
+        const nameXPath = '//*[@name=' + toXPathLiteral(name) + ']';
+
+        if (isUniqueXPath(nameXPath, el)) {
+            return nameXPath;
+        }
+    }
+
+    const ariaLabel = el.getAttribute('aria-label');
+
+    if (ariaLabel) {
+        const ariaLabelXPath = '//*[@aria-label=' + toXPathLiteral(ariaLabel) + ']';
+
+        if (isUniqueXPath(ariaLabelXPath, el)) {
+            return ariaLabelXPath;
+        }
+    }
+
+    const placeholder = el.getAttribute('placeholder');
+
+    if (placeholder) {
+        const placeholderXPath = '//*[@placeholder=' + toXPathLiteral(placeholder) + ']';
+
+        if (isUniqueXPath(placeholderXPath, el)) {
+            return placeholderXPath;
+        }
+    }
+
+    const href = el.getAttribute('href');
+
+    if (
+        el.tagName.toLowerCase() === 'a'
+        && href
+        && !href.startsWith('javascript:')
+    ) {
+        const hrefXPath = '//a[@href=' + toXPathLiteral(href) + ']';
+        if (
+            isUniqueXPath(hrefXPath, el)) {
+            return hrefXPath;
+        }
+    }
+    const text = normalizeRecorderText(el.textContent || '');
+    if (
+        text
+        && text.length <= 40
+        && !isLikelyDynamicText(text)
+    ) {
+        const textXPath = '//' + el.tagName.toLowerCase()
+            + '[normalize-space(.)=' + toXPathLiteral(text) + ']';
+
+        if (isUniqueXPath(textXPath, el)) {
+            return textXPath;
+        }
+    }
+
+    const stableParentXPath = buildXPathFromStableParent(el);
+
+    if (stableParentXPath) {
+        return stableParentXPath;
+    }
+    const parts = [];
+    let current = el;
+
+    while (
+        current
+        && current.nodeType
+        === Node.ELEMENT_NODE
+        && current.tagName
+            .toLowerCase() !== 'html'
+        ) {
+        const tag = current.tagName.toLowerCase();
+
+        const siblings = current.parentNode ? Array.from(current.parentNode.children).filter(node => {
+            return node.tagName === current.tagName;
+        }) : [];
+
         let part = tag;
         if (siblings.length > 1) {
-            let index = siblings.indexOf(el) + 1;
-            part += `[${index}]`;
+            const position = siblings.indexOf(current) + 1;
+            part += `[${position}]`;
         }
+
         parts.unshift(part);
-        el = el.parentNode;
-        if (el && el.tagName && el.tagName.toLowerCase() === 'body') break;
+        current = current.parentElement;
+
+        if (current && current.tagName && current.tagName.toLowerCase() === 'body') {
+            break;
+        }
     }
-    return `//${parts.join('/')}`;
+
+    const structuralXPath = `//${parts.join('/')}`;
+
+    if (isUniqueXPath(structuralXPath, el)
+    ) {
+        return structuralXPath;
+    }
+
+    console.warn('[Recorder] No unique XPath found', {element: el, structuralXPath: structuralXPath});
+
+    return null;
 }
-
-
-/* ======================== AUTRES (TON CODE) ======================== */
 
 function useHref(tag_name, el) {
     return (tag_name === 'a' && el.hasAttribute('href') &&
@@ -374,7 +910,6 @@ function saveRecordedActions() {
     sessionStorage.setItem('recorded_actions', json_rec_act);
 }
 
-// (on garde ta logique new_tab_on_new_origin telle quelle)
 function new_tab_on_new_origin() {
     var AllAnchorTags = document.getElementsByTagName('a');
     for (var i = 0; i < AllAnchorTags.length; i++) {
@@ -401,7 +936,6 @@ function new_tab_on_new_origin() {
 
 new_tab_on_new_origin();
 
-// keep these blocks (as is)
 var AllInputTags = document.getElementsByTagName('input');
 var AllButtonTags = document.getElementsByTagName('button');
 var All_IB_Tags = [];
@@ -462,21 +996,19 @@ var set_border = function (color) {
     document.querySelector('body').style.borderRadius = '10px';
 };
 
-
-/* ======================== PHASE 1: NAMING + DEDUP + INPUT CONSOLIDATION ======================== */
-
-// Dédup click (évite double click enregistré)
 const CLICK_DEDUP_MS = 350;
 let lastClickKey = null;
 let lastClickTs = 0;
 
-// Debounce input (évite keyup lettre par lettre)
+let pendingClick = null;
+const PENDING_CLICK_MS = 70;
+
+
 const INPUT_DEBOUNCE_MS = 400;
-const inputTimers = new Map();  // key -> timeoutId
-const lastSentValue = new Map();// key -> last value sent
+const inputTimers = new Map();
+const lastSentValue = new Map();
 
 function simpleHash(str) {
-    // hash stable simple (suffisant pour suffix 6 chars)
     var h = 2166136261;
     for (var i = 0; i < str.length; i++) {
         h ^= str.charCodeAt(i);
@@ -484,6 +1016,36 @@ function simpleHash(str) {
     }
     return (h >>> 0).toString(16);
 }
+
+function clickCandidateScore(el) {
+    if (!(el instanceof Element)) return -999;
+
+    if (el.getAttribute('data-testid')) return 1000;
+    if (el.getAttribute('data-test')) return 980;
+    if (el.getAttribute('data-cy')) return 980;
+
+    if (el.id && !isDynamicId(el.id)) {
+        return 900;
+    }
+
+    if (el.getAttribute('formcontrolname')) {
+        return 850;
+    }
+
+    if (el.getAttribute('name')) return 800;
+    if (el.getAttribute('aria-label')) return 700;
+
+    const tag = el.tagName;
+    if (tag === 'BUTTON') return 650;
+    if (tag === 'A') return 640;
+    if (tag === 'INPUT') return 630;
+
+
+    if (tag === 'FORM') return 100;
+    if (tag === 'DIV' || tag === 'SECTION' || tag === 'MAIN') return 150;
+
+    return 300;
+};
 
 function sanitizeJavaName(name) {
     let n = (name || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
@@ -495,7 +1057,6 @@ function sanitizeJavaName(name) {
 }
 
 function stableKeyFrom(el) {
-    // clé stable basée sur CSS selector prioritaire
     return 'css:' + getEnhancedSelector(el);
 }
 
@@ -508,78 +1069,384 @@ function isEditableInput(el) {
     return !['checkbox', 'radio', 'range', 'file', 'button', 'submit', 'reset'].includes(type);
 }
 
+function getAdjacentText(el) {
+    if (!(el instanceof Element)) {
+        return '';
+    }
 
-/* ======================== BUILD ACTION DATA (FIABILISÉ) ======================== */
+    let node = el.nextSibling;
+
+    while (node) {
+
+        if (node.nodeType === Node.TEXT_NODE) {
+            const text = (node.textContent || '')
+                .replace(/\u00A0/g, ' ')
+                .replace(/\u200B/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (text) {
+                return text;
+            }
+        }
+
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            break;
+        }
+
+        node = node.nextSibling;
+    }
+
+    return '';
+}
+
+function buildScopedCheckboxXPath(el) {
+    if (!(el instanceof Element)) {
+        return null;
+    }
+
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+
+    if (tag !== 'input' || type !== 'checkbox') {
+        return null;
+    }
+
+    const parent = el.closest('[id]');
+
+    if (!parent || !parent.id) {
+        return null;
+    }
+
+    const checkboxes = Array.from(
+        parent.querySelectorAll('input[type="checkbox"]')
+    );
+
+    const index = checkboxes.indexOf(el);
+
+    if (index < 0) {
+        return null;
+    }
+
+    const parentTag = parent.tagName.toLowerCase();
+    const escapedParentId =
+        parent.id.replace(/'/g, '\\\'');
+
+    return '//'
+        + parentTag
+        + '[@id=\''
+        + escapedParentId
+        + '\']/input[@type=\'checkbox\']['
+        + (index + 1)
+        + ']';
+}
+
+function normalizeRecorderText(text) {
+    return String(text || '')
+        .replace(/[\u00A0\u202F\u2007]/g, ' ')
+        .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+const STABLE_DATA_ATTRIBUTES = [
+    'data-selenium-id',
+    'data-testid',
+    'data-test',
+    'data-cy',
+    'data-css',
+    'data-qa',
+    'data-tid',
+    'data-auto',
+    'data-test-id',
+    'data-test-selector'
+];
+
+function addUniqueDataAttributeTargets(targets, el) {
+    if (!(el instanceof Element)) {
+        return;
+    }
+
+    for (const attributeName of STABLE_DATA_ATTRIBUTES) {
+        const attributeValue =
+            el.getAttribute(attributeName);
+        if (!attributeValue) {
+            continue;
+        }
+        const selector = '[' + attributeName + '="' + escapeCssAttribute(attributeValue) + '"]';
+
+        if (!isUniqueCssSelector(selector, el)) {
+            continue;
+        }
+
+        const alreadyPresent = targets.some(target => {
+            return target[0] === attributeName && target[1] === attributeValue;
+        });
+        if (!alreadyPresent) {
+            targets.push([
+                attributeName,
+                attributeValue
+            ]);
+        }
+    }
+}
+
+function getFirstStableDataValue(el) {
+    for (const attributeName of STABLE_DATA_ATTRIBUTES) {
+        const value = el.getAttribute(attributeName);
+        if (value) {
+            return value;
+        }
+    }
+    return null;
+}
+
+function addUniqueTextTarget(targets, el, normalizedText) {
+    if (
+        !(el instanceof Element)
+        || !normalizedText
+        || normalizedText.length > 80
+    ) {
+        return;
+    }
+
+    const tagName = el.tagName.toLowerCase();
+
+    const matchingElements = Array.from(document.querySelectorAll(tagName)).filter(candidate => {
+        const candidateText = normalizeRecorderText(candidate.textContent || '');
+        return candidateText === normalizedText;
+    });
+
+    const isUnique = matchingElements.length === 1 && matchingElements[0] === el;
+    if (!isUnique) {
+        return;
+    }
+
+    const alreadyPresent = targets.some(target => {
+        return target[0] === 'uniqueElementText' && target[1] === normalizedText;
+    });
+
+    if (!alreadyPresent) {
+        targets.push([
+            'uniqueElementText',
+            normalizedText
+        ]);
+    }
+}
+
+function getAssociatedLabelText(el) {
+    if (!(el instanceof Element)) {
+        return '';
+    }
+
+    if (el.id) {
+        const labels = Array.from(el.ownerDocument.querySelectorAll('label[for]'));
+
+        const associatedLabel = labels.find(label => {
+            return label.getAttribute('for') === el.id;
+        });
+
+        if (associatedLabel) {
+            return normalizeRecorderText(associatedLabel.textContent || '');
+        }
+    }
+
+    const parentLabel = el.closest('label');
+
+    if (parentLabel) {
+        return normalizeRecorderText(parentLabel.textContent || '');
+    }
+
+    return '';
+}
+
+/* ======================== BUILD ACTION DATA  ======================== */
 
 function buildActionData(el, command) {
     el = turnIntoParentAsNeeded(el);
 
     const targets = [];
+    const associatedLabelText = getAssociatedLabelText(el);
 
-    // Cibles "humaines" (ton plugin peut les exploiter si tu veux)
-    if (el.id) targets.push(['id', el.id]);
-    if (el.getAttribute('name')) targets.push(['name', el.getAttribute('name')]);
+    if (associatedLabelText && associatedLabelText.length <= 80) {
+        targets.push(['labelText', associatedLabelText]);
+    }
 
-    if (el.tagName.toLowerCase() === 'a' && el.textContent.trim()) {
-        targets.push(['linkText', el.textContent.trim()]);
+    const currentTag = el.tagName.toLowerCase();
+    const currentType =
+        (el.getAttribute('type') || '').toLowerCase();
+
+    const adjacentText = getAdjacentText(el);
+    const isCheckableInput = currentTag === 'input' && (currentType === 'checkbox' || currentType === 'radio');
+    const normalizedElementText = normalizeRecorderText(el.textContent || (isCheckableInput ? '' : el.getAttribute('value')) || '');
+
+    if (el.id && !isDynamicId(el.id)) {
+        const idSelector = safeCssIdSelector(el.id);
+
+        if (idSelector && isUniqueCssSelector(idSelector, el)) {
+            targets.push(['id', el.id]);
+        }
+    }
+
+    addUniqueDataAttributeTargets(
+        targets,
+        el
+    );
+    const formControlName = el.getAttribute('formcontrolname');
+
+    if (formControlName) {
+        targets.push(['formControlName', formControlName]);
+    }
+
+    const name = el.getAttribute('name');
+
+    if (name) {
+        const nameSelector = el.tagName.toLowerCase() + '[name="' + escapeCssAttribute(name) + '"]';
+        if (isUniqueCssSelector(nameSelector, el)) {
+            targets.push(['name', name]);
+        }
+    }
+
+    if (currentTag === 'a' && normalizedElementText) {
+        targets.push(['linkText', normalizedElementText]);
+
+        if (normalizedElementText.length <= 60) {
+            const matchingLinks = Array.from(el.ownerDocument.querySelectorAll('a')).filter(candidate => {
+                const candidateText = normalizeRecorderText(candidate.innerText || candidate.textContent || '');
+                return candidateText === normalizedElementText;
+            });
+
+            if (matchingLinks.length === 1 && matchingLinks[0] === el) {
+                targets.push(['uniqueLinkText', normalizedElementText]);
+            }
+        }
+    }
+
+    const isLinkElement = currentTag === 'a';
+
+    const isButtonElement = currentTag === 'button' || (
+        currentTag === 'input'
+        && ['button', 'submit', 'reset'].includes(currentType)
+    );
+
+    if (normalizedElementText && normalizedElementText.length <= 80 && !isLinkElement && !isButtonElement && !isCheckableInput) {
+        targets.push(['elementText', normalizedElementText]);
+    }
+    if (!isLinkElement && !isButtonElement && !isCheckableInput) {
+        addUniqueTextTarget(targets, el, normalizedElementText);
     }
     if (el.getAttribute('aria-label')) {
         targets.push(['ariaLabel', el.getAttribute('aria-label')]);
     }
+
+    if (el.getAttribute('aria-labelledby')) {
+        targets.push([
+            'ariaLabelledBy',
+            el.getAttribute('aria-labelledby')
+        ]);
+    }
+
+    if (el.getAttribute('placeholder')) {
+        targets.push([
+            'placeholder',
+            el.getAttribute('placeholder')
+        ]);
+    }
     if (el.getAttribute('role')) {
         targets.push(['role', el.getAttribute('role')]);
     }
-    if ((el.tagName.toLowerCase() === 'button' || el.type === 'button') && el.textContent.trim()) {
-        targets.push(['buttonText', el.textContent.trim()]);
+    if (
+        isButtonElement
+        && normalizedElementText
+        && normalizedElementText.length <= 80
+    ) {
+        targets.push([
+            'buttonText',
+            normalizedElementText
+        ]);
+
+        const matchingButtons = Array.from(el.ownerDocument.querySelectorAll(
+                'button, input[type="button"], input[type="submit"], input[type="reset"]'
+            )
+        ).filter(candidate => {
+            const candidateText = normalizeRecorderText(
+                candidate.innerText
+                || candidate.textContent
+                || candidate.getAttribute('value')
+                || ''
+            );
+
+            return candidateText === normalizedElementText;
+        });
+
+        if (
+            matchingButtons.length === 1
+            && matchingButtons[0] === el
+        ) {
+            targets.push([
+                'uniqueButtonText',
+                normalizedElementText
+            ]);
+        }
     }
-    if (el.getAttribute('data-testid')) {
-        targets.push(['data-testid', el.getAttribute('data-testid')]);
+
+    if (currentTag === 'input' && currentType === 'checkbox') {
+
+        const checkboxName = el.getAttribute('name');
+
+        const checkboxValue = el.getAttribute('value');
+
+        if (checkboxName && checkboxValue) {
+            const checkboxSelector = 'input[type="checkbox"]' + '[name="' + escapeCssAttribute(checkboxName) + '"]' + '[value="' + escapeCssAttribute(checkboxValue) + '"]';
+            if (isUniqueCssSelector(checkboxSelector, el)) {
+                targets.push([
+                    'checkboxNameValue',
+                    checkboxName + '||VALUE||' + checkboxValue
+                ]);
+            }
+        }
+
+        if (adjacentText) {
+            targets.push([
+                'adjacentText',
+                adjacentText
+            ]);
+        }
+
+        const scopedCheckboxXPath = buildScopedCheckboxXPath(el);
+
+        if (scopedCheckboxXPath) {
+            targets.push([
+                'xpath:scopedCheckbox',
+                scopedCheckboxXPath
+            ]);
+        }
     }
 
     const css = getEnhancedSelector(el);
-    const xpath = getEnhancedXPath(el);
-    targets.push(['css', css]);
-    targets.push(['xpath', xpath]);
+    if (css) {
+        targets.push(['css', css]);
+    }
 
-    // elementName amélioré: base + suffix hash du locator => plus de collisions
-    const base =
-        el.getAttribute('data-testid') ||
-        (el.id && !isGen(el.id) ? el.id : null) ||
-        el.getAttribute('name') ||
-        el.getAttribute('aria-label') ||
-        `${command}Element`;
+    const xpath = getEnhancedXPath(el);
+    if (xpath) {
+        targets.push(['xpath', xpath]);
+    }
 
     const key = stableKeyFrom(el);
     const suffix = simpleHash(key).substring(0, 6);
     const elementName = sanitizeJavaName(base) + '_' + suffix;
 
     return {
-        elementName: elementName,
-        stableKey: key,              // bonus (si plugin veut dédup)
         command: command,
-        tagName: el.tagName.toLowerCase(),
-        text: el.textContent.trim() || '',
-        attributes: {
-            id: el.id || '',
-            name: el.getAttribute('name') || '',
-            role: el.getAttribute('role') || '',
-            ariaLabel: el.getAttribute('aria-label') || '',
-            dataTestid: el.getAttribute('data-testid') || '',
-            type: el.getAttribute('type') || '',
-            href: el.getAttribute('href') || '',
-            dataContent: el.getAttribute('data-content') || ''
-        },
+        tagName: currentTag,
+        inputType: currentType,
         targets: targets,
-        value: el.value || '',
-        url: window.location.href,
-        title: document.title,
-        timestamp: Date.now()
+        value: el.value || ''
     };
 }
 
-
 /* ======================== LISTENERS  ======================== */
-
 
 window.addEventListener('blur', () => {
     setTimeout(() => {
@@ -599,32 +1466,27 @@ window.addEventListener('blur', () => {
             const selector = getBestSelector(el);
             const origin = window.location.origin;
 
-            // Si l’iframe a un src non data -> on ouvre comme avant (si c’est votre convention)
             if (el.hasAttribute('src') && el.getAttribute('src').length > 0) {
                 if (el.src.startsWith('data:')) return;
                 skip_open = true;
-                window.open(el.src, '_blank');
             } else {
-                // NE PAS remplacer le body !
-                // On essaie d'instrumenter l'iframe si même origine
+
                 try {
                     attachRecorderToIframe(el);
                 } catch (e) {
-                    // si cross-origin ou échec, on ignore
+
                 }
             }
 
-            // On enregistre l’entrée dans l’iframe
             document.recorded_actions.push(['sw_fr', selector, origin, now]);
 
-            // Si on a ouvert, on marque le skip focus (comportement existant)
             if (skip_open) {
                 document.recorded_actions.push(['sk_fo', '', origin, now + 1]);
             }
 
             saveRecordedActions();
 
-            // Ajouter un listener one-shot pour détecter le retour au parent et pousser fr_root
+
             try {
                 const onBackToParent = () => {
                     document.removeEventListener('focus', onBackToParent, true);
@@ -640,96 +1502,254 @@ window.addEventListener('blur', () => {
 }, {once: false});
 
 
-/**** action iframe path******/
-
 function sendAction(el, command, extra = {}) {
     const framePath = getFramePath();
     const base = buildActionData(el, command);
     sendToServer({...base, framePath, ...extra});
 }
 
+document.addEventListener('pointerdown',
+    function (event) {
+        const target =
+            event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
 
-/* -------- CLICK : dédoublonnage + envoi serveur (compatible plugin) -------- */
+        const customCheckbox =
+            target.closest(
+                '[role="checkbox"]'
+            );
+
+        if (!customCheckbox) {
+            return;
+        }
+        const previousState = customCheckbox.getAttribute('aria-checked') === 'true';
+        customCheckboxStateBeforeClick.set(customCheckbox, previousState);
+    },
+    true
+);
+
+
 document.body.addEventListener('click', function (event) {
-    const el = turnIntoParentAsNeeded(event.target);
-    if (!(el instanceof Element)) return;
-
-    // pause?
+    reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const key = stableKeyFrom(el);
-    const t = Date.now();
-    if (lastClickKey === key && (t - lastClickTs) < CLICK_DEDUP_MS) {
+    const rawTarget = event.target;
+
+    if (!(rawTarget instanceof Element)) {
         return;
     }
-    lastClickKey = key;
-    lastClickTs = t;
 
-    const framePath = getFramePath();
+    const rawTag = rawTarget.tagName.toLowerCase();
+    const rawType = (rawTarget.getAttribute('type') || '').toLowerCase();
 
-    //const actionData = buildActionData(el, 'click');
+    if (
+        rawTag === 'select' ||
+        (
+            rawTag === 'input' &&
+            ['checkbox', 'radio'].includes(rawType)
+        )
+    ) {
+        return;
+    }
 
-    const actionData = {
-        ...buildActionData(el, 'click'),
-        framePath: framePath
+    let el = normalizeClickTarget(rawTarget);
+    el = findClickableAncestor(el);
+    if (!(el instanceof Element)) return;
+
+    const customCheckbox = el.closest('[role="checkbox"]');
+    if (customCheckbox) {
+        const previousState = customCheckboxStateBeforeClick.get(customCheckbox);
+        setTimeout(() => {
+            const currentState = customCheckbox.getAttribute('aria-checked') === 'true';
+
+            customCheckboxStateBeforeClick.delete(customCheckbox);
+            if (
+                typeof previousState === 'boolean'
+                && currentState === previousState
+            ) {
+                console.warn(
+                    '[Recorder] Custom checkbox: '
+                    + 'no state change detected',
+                    {
+                        element: customCheckbox,
+                        previousState: previousState,
+                        currentState: currentState
+                    }
+                );
+
+                return;
+            }
+
+            const command = currentState ? 'check' : 'uncheck';
+            const selector = getEnhancedSelector(customCheckbox);
+            const now = Date.now();
+
+            sendAction(customCheckbox, command, {
+                    value:
+                        String(currentState),
+                    checked:
+                    currentState
+                }
+            );
+
+            document.recorded_actions.push([
+                'c_box',
+                selector,
+                currentState ? 'yes' : 'no',
+                now
+            ]);
+
+            saveRecordedActions();
+        }, 0);
+
+        return;
+    }
+
+    const now = Date.now();
+    const score = clickCandidateScore(el);
+
+    if (pendingClick && (now - pendingClick.ts) < PENDING_CLICK_MS) {
+
+        const sameKey = stableKeyFrom(el) === pendingClick.key;
+        const related =
+            sameKey ||
+            (pendingClick.el instanceof Element && pendingClick.el.contains(el)) ||
+            (el.contains(pendingClick.el));
+
+        if (related) {
+            if (score > pendingClick.score) {
+                pendingClick.el = el;
+                pendingClick.score = score;
+                pendingClick.ts = now;
+                pendingClick.key = stableKeyFrom(el);
+                pendingClick.event = event;
+            }
+            return;
+        }
+    }
+
+    pendingClick = {
+        el,
+        score,
+        ts: now,
+        key: stableKeyFrom(el),
+        event,
+        timer: null
     };
 
-    sendToServer(actionData);
-    // console.log('CLICK FRAME PATH =', framePath);
-    document.recorded_actions.push(['click', getBestSelector(el), el.href || '', t]);
-    saveRecordedActions();
+    const localPendingClick = pendingClick;
+
+    localPendingClick.timer = setTimeout(() => {
+        if (pendingClick !== localPendingClick) {
+            return;
+        }
+
+        const el2 = localPendingClick.el;
+        const t = Date.now();
+
+        if (
+            lastClickKey === localPendingClick.key &&
+            (t - lastClickTs) < CLICK_DEDUP_MS
+        ) {
+            pendingClick = null;
+            return;
+        }
+
+        lastClickKey = localPendingClick.key;
+        lastClickTs = t;
+
+        sendAction(el2, 'click');
+
+        document.recorded_actions.push([
+            'click',
+            getBestSelector(el2),
+            el2.href || '',
+            t
+        ]);
+
+        saveRecordedActions();
+        pendingClick = null;
+    }, PENDING_CLICK_MS);
 });
 
-
-/* -------- DBLCLICK : corrige "dbclick" -> "dblclick" -------- */
 document.body.addEventListener('dblclick', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = turnIntoParentAsNeeded(event.target);
+    let el = normalizeClickTarget(event.target);  // MMA : labels, images
+    el = findClickableAncestor(el);
+
     const selector = getBestSelector(el);
     const d_now = Date.now();
 
-    const actionData = buildActionData(el, 'dblclick');
-    sendToServer(actionData);
+    sendAction(el, 'dblclick');
 
     document.recorded_actions.push(['dblclick', selector, '', d_now]);
     saveRecordedActions();
 });
 
 
-/* -------- SUBMIT : garde ta logique + flush input final si besoin -------- */
 document.body.addEventListener('submit', function (event) {
     reset_if_recorder_undefined();
-    if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = event.target;
-    const d_now = Date.now();
+    if (sessionStorage.getItem('pause_recorder') === 'yes') {
+        return;
+    }
 
-    // Flush input actif (si editable) avant submit
+    const now = Date.now();
+
+    let el = event.submitter;
+
+    if (!(el instanceof Element)) {
+        const form = event.target;
+
+        if (form instanceof HTMLFormElement) {
+            el = form.querySelector(
+                'button[type="submit"], '
+                + 'input[type="submit"], '
+                + 'button:not([type])'
+            );
+        }
+    }
+
+    if (!(el instanceof Element)) {
+        return;
+    }
+
     const active = document.activeElement;
+
     if (active && isEditableInput(active)) {
         flushFinalInput(active);
     }
 
-    const actionData = buildActionData(el, 'click'); // tu avais 'click' ici, on garde pour compat plugin
-    sendToServer(actionData);
+    el = normalizeClickTarget(el);
+    el = findClickableAncestor(el);
 
-    // Enregistrement local
-    const ra_len = document.recorded_actions.length;
-    if (ra_len > 0 &&
-        document.recorded_actions[ra_len - 1][0] === 'input' &&
-        !document.recorded_actions[ra_len - 1][2].endsWith('\n')) {
-        const lastSelector = document.recorded_actions[ra_len - 1][1];
-        const lastText = document.recorded_actions[ra_len - 1][2] + '\n';
-        document.recorded_actions.pop();
-        document.recorded_actions.push(['input', lastSelector, lastText, d_now]);
-        saveRecordedActions();
+    if (!(el instanceof Element)) {
+        return;
     }
+
+    const key = stableKeyFrom(el);
+
+    if (
+        lastClickKey === key &&
+        (now - lastClickTs) < CLICK_DEDUP_MS
+    ) {
+        return;
+    }
+
+    lastClickKey = key;
+    lastClickTs = now;
+
+    sendAction(el, 'click');
+
+    document.recorded_actions.push(['click', getBestSelector(el), '', now]);
+
+    saveRecordedActions();
 });
 
-
-/* -------- FORM DATA : garde ton code -------- */
 document.body.addEventListener('formdata', function () {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
@@ -746,13 +1766,11 @@ document.body.addEventListener('formdata', function () {
     }
 });
 
-
-/* -------- DRAG/DROP : garde ton code -------- */
 document.body.addEventListener('dragstart', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var rec_mode = sessionStorage.getItem('recorder_mode');
@@ -782,7 +1800,7 @@ document.body.addEventListener('drop', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     if (ra_len > 0 && document.recorded_actions[ra_len - 1][0] === 'drags') {
@@ -793,79 +1811,137 @@ document.body.addEventListener('drop', function (event) {
     }
 });
 
+const lastCheckboxState = new Map();
+const customCheckboxStateBeforeClick =
+    new WeakMap();
 
-/* -------- CHANGE : on ajoute ENVOI serveur pour select/checkbox + fix France value="" -------- */
 document.body.addEventListener('change', function (event) {
     reset_if_recorder_undefined();
-    if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const d_now = Date.now();
+    if (sessionStorage.getItem('pause_recorder') === 'yes') {
+        return;
+    }
+
     const el = event.target;
-    const selector = getBestSelector(el);
-    var ra_len = document.recorded_actions.length;
-    var tag_name = tagName(el);
-    var e_type = el.type;
 
-    if (tag_name === 'select') {
-        var el_computed = document.querySelector(selector);
-        var opt = el_computed.options[el_computed.selectedIndex];
-        var optText = opt ? opt.text : '';
-        var optValue = el_computed.value;
+    if (!(el instanceof Element)) {
+        return;
+    }
 
-        // Envoi serveur compatible plugin: command "change"
-        sendAction(el, 'change', {
-            value: (optValue && optValue.length > 0) ? optValue : optText,
-            selectedText: optText
+    const currentTag = el.tagName.toLowerCase();
+    const currentType = (el.getAttribute('type') || '').toLowerCase();
+
+    const selector = getEnhancedSelector(el);
+    const now = Date.now();
+
+    if (currentTag === 'select') {
+
+        const selectedOption = el.options[el.selectedIndex];
+
+        const selectedText = selectedOption
+            ? selectedOption.text.trim()
+            : '';
+
+        const selectedValue = el.value || '';
+
+        sendAction(el, 'select', {
+            value: selectedText
+                ? 'label=' + selectedText
+                : 'value=' + selectedValue,
+            selectedText: selectedText
         });
 
-        // Local
-        document.recorded_actions.push(['s_opt', selector, optText, d_now]);
+        document.recorded_actions.push([
+            's_opt',
+            selector,
+            selectedText,
+            now
+        ]);
+
         saveRecordedActions();
         return;
     }
 
-    // checkbox
-    if (tag_name === 'input' && e_type === 'checkbox') {
-        sendAction(el, 'change', {value: el.checked ? 'yes' : 'no'});
+    if (currentTag === 'input' && currentType === 'checkbox') {
+        const checked = Boolean(el.checked);
+        const previousState = lastCheckboxState.get(selector);
 
-        // Local
-        if (ra_len > 0 &&
-            document.recorded_actions[ra_len - 1][1] === selector) {
-            document.recorded_actions.pop();
+        if (previousState === checked) {
+            return;
         }
-        document.recorded_actions.push(['c_box', selector, el.checked ? 'yes' : 'no', d_now]);
+
+        lastCheckboxState.set(selector, checked);
+
+        sendAction(el, checked ? 'check' : 'uncheck', {
+            value: checked ? 'true' : 'false'
+        });
+
+        document.recorded_actions.push([
+            'c_box',
+            selector,
+            checked ? 'yes' : 'no',
+            now
+        ]);
+
         saveRecordedActions();
         return;
     }
 
-    // range / file (garde ton comportement local)
-    if (tag_name === 'input' && e_type === 'range') {
-        if (ra_len > 0 && document.recorded_actions[ra_len - 1][1] === selector) {
-            document.recorded_actions.pop();
-            ra_len = document.recorded_actions.length;
-        }
-        var value = el.value;
-        document.recorded_actions.push(['set_v', selector, value, d_now]);
-    } else if (tag_name === 'input' && e_type === 'file') {
-        if (ra_len > 0 && document.recorded_actions[ra_len - 1][1] === selector) {
-            document.recorded_actions.pop();
-            ra_len = document.recorded_actions.length;
-        }
-        var value2 = el.value;
-        document.recorded_actions.push(['cho_f', selector, value2, d_now]);
+    if (currentTag === 'input' && currentType === 'radio') {
+        sendAction(el, 'click', {
+            value: el.value || ''
+        });
+
+        document.recorded_actions.push([
+            'click',
+            selector,
+            el.value || '',
+            now
+        ]);
+
+        saveRecordedActions();
+        return;
     }
 
-    saveRecordedActions();
+    if (currentTag === 'input' && currentType === 'range') {
+        sendAction(el, 'change', {
+            value: el.value || ''
+        });
+
+        document.recorded_actions.push([
+            'set_v',
+            selector,
+            el.value || '',
+            now
+        ]);
+
+        saveRecordedActions();
+        return;
+    }
+
+    if (currentTag === 'input' && currentType === 'file') {
+        sendAction(el, 'change', {
+            value: el.value || ''
+        });
+
+        document.recorded_actions.push([
+            'cho_f',
+            selector,
+            el.value || '',
+            now
+        ]);
+
+        saveRecordedActions();
+    }
 });
 
 
-/* -------- MOUSEDOWN/MOUSEUP/CONTEXTMENU : garde ton code tel quel -------- */
 document.body.addEventListener('mousedown', function (event) {
     reset_if_recorder_undefined();
     new_tab_on_new_origin();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    var el = event.target;
+    var el = findClickableAncestor(event.target);
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var rec_mode = sessionStorage.getItem('recorder_mode');
@@ -927,7 +2003,7 @@ document.body.addEventListener('mouseup', function (event) {
     const d_now = Date.now();
     document.recorder_last_mouseup = d_now;
 
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     var selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var tag_name = tagName(el);
@@ -1018,25 +2094,46 @@ document.body.addEventListener('mouseup', function (event) {
     saveRecordedActions();
 });
 
-document.body.addEventListener('contextmenu', function (event) {
-    reset_if_recorder_undefined();
-    if (sessionStorage.getItem('pause_recorder') === 'yes') return;
-    const el = event.target;
-    const selector = getBestSelector(el);
-    var ra_len = document.recorded_actions.length;
-    if (ra_len > 0 &&
-        document.recorded_actions[ra_len - 1][0] === 'mo_dn' &&
-        document.recorded_actions[ra_len - 1][1] === selector) {
-        document.recorded_actions.pop();
+document.body.addEventListener(
+    'contextmenu',
+    function (event) {
+        reset_if_recorder_undefined();
+
+        if (sessionStorage.getItem('pause_recorder') === 'yes') {
+            return;
+        }
+        event.preventDefault();
+        let el = normalizeClickTarget(event.target);
+        el = findClickableAncestor(el);
+
+        if (!(el instanceof Element)) {
+            return;
+        }
+
+        const selector = getEnhancedSelector(el);
+
+        const lastAction =
+            document.recorded_actions[
+            document.recorded_actions.length - 1
+                ];
+
+        if (
+            lastAction
+            && lastAction[0] === 'mo_dn'
+            && lastAction[1] === selector
+        ) {
+            document.recorded_actions.pop();
+        }
+
+        sendAction(el, 'contextmenu');
+        document.recorded_actions.push(['contextmenu', selector, '', Date.now()]);
         saveRecordedActions();
-    }
-});
-
-
-/* ======================== PHASE 1 INPUT: 1 SEUL EVENT PAR SAISIE ======================== */
-
-// On ne veut PLUS envoyer au serveur "keyup" à chaque lettre.
-// => On envoie 1 seul "keyup" consolidé (compatible plugin) via input + blur + Enter.
+        console.debug(
+            '[Recorder] Context menu recorded',
+            {element: el, selector: selector});
+    },
+    true
+);
 
 function scheduleFinalInput(el) {
     if (!isEditableInput(el)) return;
@@ -1045,7 +2142,6 @@ function scheduleFinalInput(el) {
     const key = stableKeyFrom(el);
     const value = el.value;
 
-    // pas de spam si inchangé
     if (lastSentValue.get(key) === value) return;
 
     if (inputTimers.has(key)) clearTimeout(inputTimers.get(key));
@@ -1054,7 +2150,6 @@ function scheduleFinalInput(el) {
         flushFinalInput(el);
     }, INPUT_DEBOUNCE_MS));
 }
-
 
 function flushFinalInput(el) {
     if (!isEditableInput(el)) return;
@@ -1069,53 +2164,35 @@ function flushFinalInput(el) {
 
     const value = el.value;
     if (lastSentValue.get(key) === value) return;
-
     sendAction(el, 'keyup', {value});
-
     lastSentValue.set(key, value);
 }
 
 
-// écoute sur input (plus fiable que keyup)
 document.addEventListener('input', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     if (!(el instanceof Element)) return;
     scheduleFinalInput(el);
 }, true);
 
-// blur ne bubble pas => capture true
+
 document.addEventListener('blur', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
-
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     if (!(el instanceof Element)) return;
     flushFinalInput(el);
 }, true);
-document.body.addEventListener('change', function (event) {
-    const el = event.target;
-    if (!el) return;
 
-    if (el.tagName.toLowerCase() === 'select') {
-        const actionData = buildActionData(el, 'select');
-        actionData.value = el.value;
 
-        const selected = el.options[el.selectedIndex];
-        actionData.selectedText = selected ? selected.text : '';
-
-        sendToServer(actionData);
-    }
-});
-
-/* ======================== KEYDOWN: Enter -> flush input (évite sendKeys partiels) ======================== */
 document.body.addEventListener('keydown', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     if (!(el instanceof Element)) return;
 
     const l_key = (event.key || '').toLowerCase();
@@ -1123,15 +2200,14 @@ document.body.addEventListener('keydown', function (event) {
         flushFinalInput(el);
     }
 
-    // On SUPPRIME l'envoi "keydown" au serveur pour éviter doublons / commands inconnues plugin.
+
 });
 
-
-/* ======================== KEYUP: on garde UNIQUEMENT la partie pause/resume + local record ======================== */
+/* ======================== KEYUP======================== */
 document.body.addEventListener('keyup', function (event) {
     reset_if_recorder_undefined();
 
-    // pause+resume controls (ton code)
+    // pause+resume controls
     var pause_rec = sessionStorage.getItem('pause_recorder');
     var rec_mode = sessionStorage.getItem('recorder_mode');
     var l_key = (event.key || '').toLowerCase();
@@ -1162,10 +2238,8 @@ document.body.addEventListener('keyup', function (event) {
     // after switching modes
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    // Ton ancien enregistrement local input (on le garde),
-    // MAIS on n'envoie PLUS au serveur ici.
     const d_now = Date.now();
-    const el = event.target;
+    const el = findClickableAncestor(event.target);
     if (!(el instanceof Element)) return;
 
     const selector = getBestSelector(el);
@@ -1219,6 +2293,87 @@ document.body.addEventListener('keyup', function (event) {
     saveRecordedActions();
 });
 
+/* ======================== DETECTION PAGE CHANGEMENT ======================== */
 
-/* ======================== FINAL ======================== */
+if (
+    window === window.top
+    && !window.__seleniumRobotPageDetectionInstalled
+) {
+    window.__seleniumRobotPageDetectionInstalled = true;
+
+    let lastPageUrl = null;
+    let pageEventTimer = null;
+
+    const sendPageEvent = function (reason) {
+        const currentUrl = window.location.href;
+
+        if (currentUrl === lastPageUrl) {
+            return;
+        }
+
+        lastPageUrl = currentUrl;
+        window.clearTimeout(pageEventTimer);
+
+        pageEventTimer = window.setTimeout(function () {
+            sendToServer({
+                command: 'pageLoad',
+                reason: reason,
+                url: currentUrl,
+                title: document.title || '',
+                timestamp: Date.now(),
+                framePath: []
+            });
+        }, 150);
+    };
+
+    const initializePageDetection = function () {
+        sendPageEvent('load');
+
+        window.addEventListener(
+            'popstate',
+            function () {
+                sendPageEvent('popstate');
+            }
+        );
+
+        window.addEventListener(
+            'hashchange',
+            function () {
+                sendPageEvent('hashchange');
+            }
+        );
+
+        const pageMonitoringInterval = window.setInterval(
+            function () {
+                sendPageEvent('spa');
+            },
+            500
+        );
+
+        window.addEventListener(
+            'pagehide',
+            function () {
+                window.clearInterval(
+                    pageMonitoringInterval
+                );
+            },
+            {
+                once: true
+            }
+        );
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            initializePageDetection,
+            {
+                once: true
+            }
+        );
+    } else {
+        initializePageDetection();
+    }
+}
+
 set_border('#F43344');

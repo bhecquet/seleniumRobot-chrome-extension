@@ -1,8 +1,8 @@
 {
-  "name": "SeleniumBase Recorder",
+  "name": "Recorder",
   "default_locale": "en",
-  "description": "SeleniumBase Recorder Extension",
-  "version": "1.0.0",
+  "description": " Extension inspired by SeleniumBase Recorder",
+  "version": "1.0.1",
   "author": "Michael Mintz",
   "homepage_url": "http://localhost:8080/",
   "manifest_version": 3,
@@ -26,7 +26,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "SeleniumBase Recorder is enabled",
+    "default_title": " Recorder is enabled",
     "default_icon": {
       "16": "images/recorder_icon.png"
     }
