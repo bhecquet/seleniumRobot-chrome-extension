@@ -8,6 +8,7 @@ var cssPathById = function (el) {
         if (el.id) {
             var elid = el.id;
 
+            // if id not safe in CSS -> fallback attribut [id="..."]
             if (/\s/.test(elid) || elid.includes(',') || elid.includes('.') ||
                 elid.includes('(') || elid.includes(':') || hasDigit(elid[0])) {
                 return cssPathByAttribute(el, 'id');
@@ -103,6 +104,10 @@ function hasDigit(str) {
     return /\d/.test(str);
 }
 
+function isGen(str) {
+    return /[_-]\d/.test(str) || /\d[a-z]/.test(str);
+}
+
 function isDynamicId(id) {
     if (!id) {
         return true;
@@ -150,6 +155,16 @@ function turnIntoParentAsNeeded(el) {
     return el;
 }
 
+/**
+ * Normalize click target to avoid :
+ *  - Clicked IMG: move up to ancestor <a href="..."> (real link)
+ *  - LABEL / SPAN inside a LABEL: move up to associated <input> (radio/checkbox)
+ *  - Icons (<svg>, <path>, <i>, <span> "cosmetic"): move up to button/link
+ *  - Styled accessible Divs: respect role="button"/"link" and onclick
+ *  - Otherwise: move up to clickable container (a, button, input[type=button|submit], role)
+ *
+ * Returns the Element that SHOULD be “clicked” functionally.
+ */
 function normalizeClickTarget(el) {
     if (!el || !(el instanceof Element)) {
         return el;
@@ -247,6 +262,7 @@ function findClickableAncestor(el) {
 let serverRequestQueue = Promise.resolve();
 
 function sendToServer(actionData) {
+    console.log('[Recorder] sending ->', actionData.command, actionData.elementName || '', actionData);
     serverRequestQueue = serverRequestQueue
         .then(() => fetch('http://localhost:5222/event', {
             method: 'POST',
@@ -1005,10 +1021,11 @@ const PENDING_CLICK_MS = 70;
 
 
 const INPUT_DEBOUNCE_MS = 400;
-const inputTimers = new Map();
-const lastSentValue = new Map();
+const inputTimers = new Map();  // key -> timeoutId
+const lastSentValue = new Map();// key -> last value sent
 
 function simpleHash(str) {
+    // hash stable simple (enough for suffix 6 chars)
     var h = 2166136261;
     for (var i = 0; i < str.length; i++) {
         h ^= str.charCodeAt(i);
@@ -1035,12 +1052,13 @@ function clickCandidateScore(el) {
     if (el.getAttribute('name')) return 800;
     if (el.getAttribute('aria-label')) return 700;
 
+    // tag relevance
     const tag = el.tagName;
     if (tag === 'BUTTON') return 650;
     if (tag === 'A') return 640;
     if (tag === 'INPUT') return 630;
 
-
+    // penalize containers
     if (tag === 'FORM') return 100;
     if (tag === 'DIV' || tag === 'SECTION' || tag === 'MAIN') return 150;
 
@@ -1057,6 +1075,7 @@ function sanitizeJavaName(name) {
 }
 
 function stableKeyFrom(el) {
+    // stable key based on priority CSS selector
     return 'css:' + getEnhancedSelector(el);
 }
 
@@ -1090,6 +1109,10 @@ function getAdjacentText(el) {
             }
         }
 
+        /*
+         * Stop at next HTML element
+         * for example <br> or another tag.
+         */
         if (node.nodeType === Node.ELEMENT_NODE) {
             break;
         }
@@ -1433,16 +1456,31 @@ function buildActionData(el, command) {
         targets.push(['xpath', xpath]);
     }
 
+
+    const base =
+        el.getAttribute('aria-label')
+        || getFirstStableDataValue(el)
+        || normalizedElementText
+        || el.getAttribute('formcontrolname')
+        || el.getAttribute('name')
+        || el.getAttribute('placeholder')
+        || (el.id && !isDynamicId(el.id) ? el.id : null)
+        || `${command}Element`;
+
     const key = stableKeyFrom(el);
     const suffix = simpleHash(key).substring(0, 6);
     const elementName = sanitizeJavaName(base) + '_' + suffix;
 
     return {
+        elementName: elementName,
         command: command,
         tagName: currentTag,
         inputType: currentType,
         targets: targets,
-        value: el.value || ''
+        value: el.value || '',
+        url: window.location.href,
+        title: document.title,
+        timestamp: Date.now()
     };
 }
 
@@ -1471,10 +1509,11 @@ window.addEventListener('blur', () => {
                 skip_open = true;
             } else {
 
+                // instrument iframe if origin is the same
                 try {
                     attachRecorderToIframe(el);
                 } catch (e) {
-
+                    // if cross-origin or failure, ignore
                 }
             }
 
@@ -1486,7 +1525,7 @@ window.addEventListener('blur', () => {
 
             saveRecordedActions();
 
-
+            // Add a one-shot listener to detect return to parent and push fr_root
             try {
                 const onBackToParent = () => {
                     document.removeEventListener('focus', onBackToParent, true);
@@ -1501,6 +1540,8 @@ window.addEventListener('blur', () => {
     });
 }, {once: false});
 
+
+/**** action iframe path******/
 
 function sendAction(el, command, extra = {}) {
     const framePath = getFramePath();
@@ -1834,6 +1875,9 @@ document.body.addEventListener('change', function (event) {
     const selector = getEnhancedSelector(el);
     const now = Date.now();
 
+    /*
+     * 1. True HTML select
+     */
     if (currentTag === 'select') {
 
         const selectedOption = el.options[el.selectedIndex];
@@ -1866,6 +1910,7 @@ document.body.addEventListener('change', function (event) {
         const checked = Boolean(el.checked);
         const previousState = lastCheckboxState.get(selector);
 
+        // Same checkbox and same state already recorded
         if (previousState === checked) {
             return;
         }
@@ -1887,6 +1932,9 @@ document.body.addEventListener('change', function (event) {
         return;
     }
 
+    /*
+     * 3. Radio HTML
+     */
     if (currentTag === 'input' && currentType === 'radio') {
         sendAction(el, 'click', {
             value: el.value || ''
@@ -1903,6 +1951,9 @@ document.body.addEventListener('change', function (event) {
         return;
     }
 
+    /*
+     * 4. Input range
+     */
     if (currentTag === 'input' && currentType === 'range') {
         sendAction(el, 'change', {
             value: el.value || ''
@@ -1919,6 +1970,9 @@ document.body.addEventListener('change', function (event) {
         return;
     }
 
+    /*
+     * 5. Input file
+     */
     if (currentTag === 'input' && currentType === 'file') {
         sendAction(el, 'change', {
             value: el.value || ''
@@ -1935,7 +1989,7 @@ document.body.addEventListener('change', function (event) {
     }
 });
 
-
+/* -------- MOUSEDOWN/MOUSEUP/CONTEXTMENU  -------- */
 document.body.addEventListener('mousedown', function (event) {
     reset_if_recorder_undefined();
     new_tab_on_new_origin();
@@ -2168,7 +2222,7 @@ function flushFinalInput(el) {
     lastSentValue.set(key, value);
 }
 
-
+// listen on input (more reliable than keyup)
 document.addEventListener('input', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
@@ -2178,7 +2232,7 @@ document.addEventListener('input', function (event) {
     scheduleFinalInput(el);
 }, true);
 
-
+// blur does not bubble => capture true
 document.addEventListener('blur', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
@@ -2187,7 +2241,7 @@ document.addEventListener('blur', function (event) {
     flushFinalInput(el);
 }, true);
 
-
+/* ======================== KEYDOWN ======================== */
 document.body.addEventListener('keydown', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
@@ -2200,14 +2254,14 @@ document.body.addEventListener('keydown', function (event) {
         flushFinalInput(el);
     }
 
-
+    // We REMOVE the "keydown" sending to the server to avoid duplicates / unknown plugin commands.
 });
 
-/* ======================== KEYUP======================== */
+/* ======================== KEYUP: we keep ONLY the pause/resume part + local record ======================== */
 document.body.addEventListener('keyup', function (event) {
     reset_if_recorder_undefined();
 
-    // pause+resume controls
+    // pause+resume controls (your code)
     var pause_rec = sessionStorage.getItem('pause_recorder');
     var rec_mode = sessionStorage.getItem('recorder_mode');
     var l_key = (event.key || '').toLowerCase();
