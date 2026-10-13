@@ -6,11 +6,7 @@ const app = express();
 const PORT = 5222;
 
 
-app.use(cors({
-    origin: 'http://localhost:8080',
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Accept']
-}));
+app.use(cors());
 
 app.use(bodyParser.json());
 
