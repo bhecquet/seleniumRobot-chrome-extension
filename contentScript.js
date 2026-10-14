@@ -1433,9 +1433,6 @@ function buildActionData(el, command) {
         targets.push(['xpath', xpath]);
     }
 
-    const key = stableKeyFrom(el);
-    const suffix = simpleHash(key).substring(0, 6);
-    const elementName = sanitizeJavaName(base) + '_' + suffix;
 
     return {
         command: command,
