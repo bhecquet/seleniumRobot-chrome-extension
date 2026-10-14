@@ -68,7 +68,7 @@ var cssPathByClass = function (el) {
             el.getAttribute('class').length > 0 &&
             !el.getAttribute('class').includes(' ') &&
             (el.getAttribute('class').includes('-')) &&
-            document.querySelectorAll(selector + '.' + el.getAttribute('class')).length === 1) {
+            getSearchRoot(el).querySelectorAll(selector + '.' + el.getAttribute('class')).length === 1) {
             selector += '.' + el.getAttribute('class');
             path.unshift(selector);
             break;
@@ -473,7 +473,7 @@ var getBestSelector = function (el) {
         if (!selector_by_attr[i]) continue;
 
         try {
-            all_by_attr[i] = document.querySelectorAll(selector_by_attr[i]);
+            all_by_attr[i] = getSearchRoot(el).querySelectorAll(selector_by_attr[i]);
         } catch (e) {
 
             all_by_attr[i] = [];
@@ -495,7 +495,7 @@ var getBestSelector = function (el) {
 
     var basic_tags = ['h1', 'h2', 'h3', 'canvas', 'center', 'input', 'textarea'];
     for (var b = 0; b < basic_tags.length; b++) {
-        var d_qsa = document.querySelectorAll(basic_tags[b]);
+        var d_qsa = getSearchRoot(el).querySelectorAll(basic_tags[b]);
         if (tag_name === basic_tags[b] && d_qsa.length === 1 && el === d_qsa[0]) return basic_tags[b];
     }
 
@@ -521,12 +521,59 @@ var getBestSelector = function (el) {
     var selector = best_selector.replaceAll(' > ', ' ');
     selector = selector.replaceAll(' div ', ' ');
     try {
-        if (document.querySelector(selector) === el) best_selector = selector;
+        if (getSearchRoot(el).querySelector(selector) === el) best_selector = selector;
     } catch (e) {
         // ignore
     }
     return best_selector;
 };
+
+/* ======================== SHADOW DOM ======================== */
+
+// A listener placed on document.body sees event.target "retargeted" on the shadow DOM host ;
+// composedPath()[0] gives the actually targeted element (only open shadow roots).
+function getEventTarget(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    if (path.length > 0 && path[0] instanceof Element) {
+        return path[0];
+    }
+    return event.target;
+}
+
+// root of element search : document or shadow root that contains it
+function getSearchRoot(el) {
+    const root = el && typeof el.getRootNode === 'function' ? el.getRootNode() : document;
+    return root && typeof root.querySelectorAll === 'function' ? root : document;
+}
+
+function isInShadowDom(el) {
+    return el instanceof Element && el.getRootNode() instanceof ShadowRoot;
+}
+
+function getShadowHostSelector(host) {
+    if (host.id && !isDynamicId(host.id)) {
+        const idSelector = safeCssIdSelector(host.id);
+        if (idSelector && isUniqueCssSelector(idSelector, host)) {
+            return idSelector;
+        }
+    }
+    const tag = host.tagName.toLowerCase();
+    if (isUniqueCssSelector(tag, host)) {
+        return tag;
+    }
+    return cssPathById(host);
+}
+
+// CSS selector for hosts to traverse, from the outermost to the innermost (nested shadow DOMs)
+function getShadowPath(el) {
+    const path = [];
+    let root = el.getRootNode();
+    while (root instanceof ShadowRoot) {
+        path.unshift(getShadowHostSelector(root.host));
+        root = root.host.getRootNode();
+    }
+    return path;
+}
 
 /* ======================== ENHANCED SELECTOR / XPATH  ======================== */
 
@@ -555,7 +602,7 @@ function isUniqueCssSelector(selector, expectedElement) {
     }
 
     try {
-        const matches = document.querySelectorAll(selector);
+        const matches = getSearchRoot(expectedElement).querySelectorAll(selector);
 
         return matches.length === 1 &&
             matches[0] === expectedElement;
@@ -708,7 +755,7 @@ function isLikelyDynamicText(text) {
  * @returns {boolean} true when the XPath is unique.
  */
 function isUniqueXPath(xpath, expectedElement) {
-    if (!xpath || !(expectedElement instanceof Element)) {
+    if (!xpath || !(expectedElement instanceof Element) || isInShadowDom(expectedElement)) {
         return false;
     }
     try {
@@ -1451,7 +1498,8 @@ function buildActionData(el, command) {
         targets.push(['css', css]);
     }
 
-    const xpath = getEnhancedXPath(el);
+    const shadowPath = getShadowPath(el);
+    const xpath = shadowPath.length === 0 ? getEnhancedXPath(el) : null;
     if (xpath) {
         targets.push(['xpath', xpath]);
     }
@@ -1476,7 +1524,8 @@ function buildActionData(el, command) {
         command: command,
         tagName: currentTag,
         inputType: currentType,
-        targets: targets,
+        targets: shadowPath.length === 0 ? targets : targets.filter(t => !String(t[0]).startsWith('xpath')),
+        shadowPath: shadowPath,
         value: el.value || '',
         url: window.location.href,
         title: document.title,
@@ -1552,7 +1601,7 @@ function sendAction(el, command, extra = {}) {
 document.addEventListener('pointerdown',
     function (event) {
         const target =
-            event.target;
+            getEventTarget(event);
         if (!(target instanceof Element)) {
             return;
         }
@@ -1576,7 +1625,7 @@ document.body.addEventListener('click', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const rawTarget = event.target;
+    const rawTarget = getEventTarget(event);
 
     if (!(rawTarget instanceof Element)) {
         return;
@@ -1719,7 +1768,7 @@ document.body.addEventListener('dblclick', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    let el = normalizeClickTarget(event.target);  // MMA : labels, images
+    let el = normalizeClickTarget(getEventTarget(event));  // MMA : labels, images
     el = findClickableAncestor(el);
 
     const selector = getBestSelector(el);
@@ -1744,7 +1793,7 @@ document.body.addEventListener('submit', function (event) {
     let el = event.submitter;
 
     if (!(el instanceof Element)) {
-        const form = event.target;
+        const form = getEventTarget(event);
 
         if (form instanceof HTMLFormElement) {
             el = form.querySelector(
@@ -1811,7 +1860,7 @@ document.body.addEventListener('dragstart', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var rec_mode = sessionStorage.getItem('recorder_mode');
@@ -1841,7 +1890,7 @@ document.body.addEventListener('drop', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     if (ra_len > 0 && document.recorded_actions[ra_len - 1][0] === 'drags') {
@@ -1863,7 +1912,7 @@ document.body.addEventListener('change', function (event) {
         return;
     }
 
-    const el = event.target;
+    const el = getEventTarget(event);
 
     if (!(el instanceof Element)) {
         return;
@@ -1995,7 +2044,7 @@ document.body.addEventListener('mousedown', function (event) {
     new_tab_on_new_origin();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
     const d_now = Date.now();
-    var el = findClickableAncestor(event.target);
+    var el = findClickableAncestor(getEventTarget(event));
     const selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var rec_mode = sessionStorage.getItem('recorder_mode');
@@ -2057,7 +2106,7 @@ document.body.addEventListener('mouseup', function (event) {
     const d_now = Date.now();
     document.recorder_last_mouseup = d_now;
 
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     var selector = getBestSelector(el);
     var ra_len = document.recorded_actions.length;
     var tag_name = tagName(el);
@@ -2157,7 +2206,7 @@ document.body.addEventListener(
             return;
         }
         event.preventDefault();
-        let el = normalizeClickTarget(event.target);
+        let el = normalizeClickTarget(getEventTarget(event));
         el = findClickableAncestor(el);
 
         if (!(el instanceof Element)) {
@@ -2227,7 +2276,7 @@ document.addEventListener('input', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     if (!(el instanceof Element)) return;
     scheduleFinalInput(el);
 }, true);
@@ -2236,7 +2285,7 @@ document.addEventListener('input', function (event) {
 document.addEventListener('blur', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     if (!(el instanceof Element)) return;
     flushFinalInput(el);
 }, true);
@@ -2246,7 +2295,7 @@ document.body.addEventListener('keydown', function (event) {
     reset_if_recorder_undefined();
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     if (!(el instanceof Element)) return;
 
     const l_key = (event.key || '').toLowerCase();
@@ -2293,7 +2342,7 @@ document.body.addEventListener('keyup', function (event) {
     if (sessionStorage.getItem('pause_recorder') === 'yes') return;
 
     const d_now = Date.now();
-    const el = findClickableAncestor(event.target);
+    const el = findClickableAncestor(getEventTarget(event));
     if (!(el instanceof Element)) return;
 
     const selector = getBestSelector(el);
