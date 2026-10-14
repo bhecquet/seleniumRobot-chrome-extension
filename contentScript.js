@@ -2396,6 +2396,80 @@ document.body.addEventListener('keyup', function (event) {
     saveRecordedActions();
 });
 
+/* ======================== VERIFY (sr-verify) ======================== */
+// The agent marks an element to check without clicking or changing the page:
+//   el.setAttribute('data-sr-verify', 'business name');
+//   el.dispatchEvent(new CustomEvent('sr-verify', {bubbles: true}));
+// The element is the event target, so nothing has to cross the isolated world.
+
+if (!window.__seleniumRobotVerifyInstalled) {
+    window.__seleniumRobotVerifyInstalled = true;
+
+    const visibleText = function (el) {
+        return normalizeRecorderText(el.innerText || el.textContent || '');
+    };
+
+    const observedValue = function (el) {
+        const tag = el.tagName.toLowerCase();
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        if (tag === 'select') {
+            return el.selectedOptions.length ? normalizeRecorderText(el.selectedOptions[0].text) : '';
+        }
+        if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+            return String(el.checked);
+        }
+        if (tag === 'input' || tag === 'textarea') {
+            return el.value || '';
+        }
+        return visibleText(el);
+    };
+
+    // <td>label</td><td>value</td>, <dt>/<dd>, <h2>/<input>... : value is the element right after its label
+    const labelForwardTarget = function (el) {
+        const label = el.previousElementSibling;
+        if (!label) {
+            return null;
+        }
+        const labelText = visibleText(label);
+        if (!labelText || labelText.length > 60 || label.querySelector('input,select,textarea,button')) {
+            return null;
+        }
+        const tag = el.tagName.toLowerCase();
+        const labelTag = label.tagName.toLowerCase();
+        const sameLabels = Array.from(el.ownerDocument.querySelectorAll(labelTag))
+            .filter(candidate => visibleText(candidate) === labelText);
+        if (sameLabels.length !== 1) {
+            return null;
+        }
+        return ['labelForward', labelText + '||TAG||' + tag + '||LABELTAG||' + labelTag];
+    };
+
+    document.addEventListener('sr-verify', function (event) {
+        const el = getEventTarget(event);
+        if (!(el instanceof Element)) {
+            return;
+        }
+        const checkName = el.getAttribute('data-sr-verify') || '';
+        el.removeAttribute('data-sr-verify');
+
+        const base = buildActionData(el, 'verify');
+        const targets = base.targets;
+        const tag = el.tagName.toLowerCase();
+
+        const labelTarget = labelForwardTarget(el);
+        if (labelTarget) {
+            targets.unshift(labelTarget);
+        }
+
+        sendToServer({
+            ...base,
+            targets: targets,
+            checkName: checkName,
+            observed: observedValue(el),
+            framePath: getFramePath()
+        });
+    }, true);
+}
 /* ======================== DETECTION PAGE CHANGEMENT ======================== */
 
 if (
