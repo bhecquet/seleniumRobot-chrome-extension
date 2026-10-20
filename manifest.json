@@ -19,12 +19,15 @@
       ],
       "all_frames": true,
       "js": [
-        "contentScript.js"
+        "src/content/recorder-utils.js",
+        "src/content/recorder-selectors.js",
+        "src/content/recorder-actions.js",
+        "src/content/contentScript.js"
       ]
     }
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "src/background.js"
   },
   "action": {
     "default_title": " Recorder is enabled",

@@ -14,7 +14,7 @@ http://localhost:5222/event
 The following tools are required to run or test the extension:
 
 - Google Chrome;
-- Node.js 22 or later;
+- Node.js 24 or later;
 - npm.
 
 Check the installed versions:
