@@ -219,6 +219,30 @@ describe('SeleniumRobot Recorder extension', function () {
         assertTarget(uncheckEvent, 'ariaLabel', 'Accepter les conditions');
     });
 
+    it('envoie un click pour un radio, même déjà sélectionné', async function () {
+        const selected = await findVisible(By.id('civilityMr'));
+
+        await selected.click();
+        const alreadySelectedEvent = await waitForEvent('click');
+
+        assert.strictEqual(alreadySelectedEvent.tagName, 'input');
+        assert.strictEqual(alreadySelectedEvent.inputType, 'radio');
+        assertTarget(alreadySelectedEvent, 'id', 'civilityMr');
+
+        clearEvents();
+        const other = await findVisible(By.id('civilityMrs'));
+        await other.click();
+
+        const changedEvent = await waitForEvent('click');
+        assertTarget(changedEvent, 'id', 'civilityMrs');
+
+        clearEvents();
+        await other.click();
+
+        const repeatedEvent = await waitForEvent('click');
+        assertTarget(repeatedEvent, 'id', 'civilityMrs');
+    });
+
     it('envoie la sélection dans une liste HTML', async function () {
         const select = await findVisible(By.id('countrySelect'));
         const option = await select.findElement(By.xpath('./option[normalize-space(.)=\'Japon\']'));

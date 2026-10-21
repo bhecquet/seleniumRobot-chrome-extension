@@ -245,6 +245,18 @@ document.body.addEventListener('click', function (event) {
             ['checkbox', 'radio'].includes(rawType)
         )
     ) {
+        // 'change' is not fired when a radio is already selected, so radios are recorded on 'click'
+        if (rawTag === 'input' && rawType === 'radio') {
+            const now = Date.now();
+            sendAction(rawTarget, 'click', {value: rawTarget.value || ''});
+            document.recorded_actions.push([
+                'click',
+                getEnhancedSelector(rawTarget),
+                rawTarget.value || '',
+                now
+            ]);
+            saveRecordedActions();
+        }
         return;
     }
 
@@ -328,6 +340,7 @@ document.body.addEventListener('click', function (event) {
         el,
         score,
         ts: now,
+        clickTs: now,
         key: stableKeyFrom(el),
         event,
         timer: null
@@ -354,13 +367,14 @@ document.body.addEventListener('click', function (event) {
         lastClickKey = localPendingClick.key;
         lastClickTs = t;
 
-        sendAction(el2, 'click');
+        // real click time, not the debounced send time
+        sendAction(el2, 'click', {timestamp: localPendingClick.clickTs});
 
         document.recorded_actions.push([
             'click',
             getBestSelector(el2),
             el2.href || '',
-            t
+            localPendingClick.clickTs
         ]);
 
         saveRecordedActions();
@@ -505,7 +519,7 @@ document.body.addEventListener('drop', function (event) {
     }
 });
 
-const lastCheckboxState = new Map();
+const lastCheckboxState = new Map();
 const customCheckboxStateBeforeClick =
     new WeakMap();
 
@@ -581,19 +595,8 @@ document.body.addEventListener('change', function (event) {
         return;
     }
 
+    // radios are recorded on 'click'
     if (currentTag === 'input' && currentType === 'radio') {
-        sendAction(el, 'click', {
-            value: el.value || ''
-        });
-
-        document.recorded_actions.push([
-            'click',
-            selector,
-            el.value || '',
-            now
-        ]);
-
-        saveRecordedActions();
         return;
     }
 
