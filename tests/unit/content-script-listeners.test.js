@@ -239,4 +239,104 @@ describe('contentScript event listeners', function () {
         assert.ok(event);
         assert.strictEqual(event.value, 'Sabine');
     });
+
+    describe('file upload', function () {
+        const html = `
+            <!DOCTYPE html>
+            <html>
+            <body>
+                <label id="uploadLabel" for="doc">Choose <span id="labelText">a file</span></label>
+                <input id="doc" type="file">
+                <input id="plain" type="text">
+                <label id="plainLabel" for="plain">Name</label>
+            </body>
+            </html>
+        `;
+
+        function setFiles(input, names) {
+            Object.defineProperty(input, 'files', {
+                configurable: true,
+                value: names.map(name => ({name}))
+            });
+        }
+
+        function click(element) {
+            element.dispatchEvent(new recorder.window.MouseEvent('click', {bubbles: true}));
+        }
+
+        it('does not record a click on a file input', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            click(recorder.document.getElementById('doc'));
+            await recorder.wait(150);
+
+            assert.strictEqual(recorder.sentEvents.length, 0);
+        });
+
+        it('does not record a click on a label bound to a file input', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            click(recorder.document.getElementById('uploadLabel'));
+            click(recorder.document.getElementById('labelText'));
+            await recorder.wait(150);
+
+            assert.strictEqual(findEvent(recorder.sentEvents, 'click'), undefined);
+        });
+
+        it('still records a click on a label bound to another input', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            click(recorder.document.getElementById('plainLabel'));
+            await recorder.wait(150);
+
+            assert.ok(findEvent(recorder.sentEvents, 'click'));
+        });
+
+        it('sends a sendKeys event with the file name on change', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            const input = recorder.document.getElementById('doc');
+            setFiles(input, ['report.pdf']);
+            input.dispatchEvent(new recorder.window.Event('change', {bubbles: true}));
+            await recorder.wait(50);
+
+            const events = recorder.sentEvents.filter(e => e.tagName === 'input');
+            assert.strictEqual(events.length, 1);
+            assert.strictEqual(events[0].command, 'sendKeys');
+            assert.strictEqual(events[0].inputType, 'file');
+            assert.strictEqual(events[0].value, 'report.pdf');
+            assert.deepStrictEqual(events[0].files, ['report.pdf']);
+            assert.ok(events[0].targets.some(t => t[0] === 'id' && t[1] === 'doc'));
+        });
+
+        it('sends all selected file names for a multiple upload', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            const input = recorder.document.getElementById('doc');
+            setFiles(input, ['a.txt', 'b.txt']);
+            input.dispatchEvent(new recorder.window.Event('change', {bubbles: true}));
+            await recorder.wait(50);
+
+            const event = findEvent(recorder.sentEvents, 'sendKeys');
+            assert.strictEqual(event.value, 'a.txt\nb.txt');
+            assert.deepStrictEqual(event.files, ['a.txt', 'b.txt']);
+        });
+
+        it('ignores a change with no selected file', async function () {
+            recorder = loadContentScript(html);
+            recorder.clearEvents();
+
+            const input = recorder.document.getElementById('doc');
+            setFiles(input, []);
+            input.dispatchEvent(new recorder.window.Event('change', {bubbles: true}));
+            await recorder.wait(50);
+
+            assert.strictEqual(recorder.sentEvents.length, 0);
+        });
+    });
 });

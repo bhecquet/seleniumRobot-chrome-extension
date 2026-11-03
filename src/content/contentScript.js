@@ -238,6 +238,12 @@ document.body.addEventListener('click', function (event) {
     const rawTag = rawTarget.tagName.toLowerCase();
     const rawType = (rawTarget.getAttribute('type') || '').toLowerCase();
 
+    // Clicking a file input opens a native dialog Selenium cannot drive: the upload is recorded
+    // on 'change' as a sendKeys, so the click (on the input or on its label) is ignored
+    if (getFileInputForClick(rawTarget)) {
+        return;
+    }
+
     if (
         rawTag === 'select' ||
         (
@@ -617,14 +623,22 @@ document.body.addEventListener('change', function (event) {
     }
 
     if (currentTag === 'input' && currentType === 'file') {
-        sendAction(el, 'change', {
-            value: el.value || ''
+        // the real path is hidden by the browser (C:\fakepath\...): only file names are sent
+        const fileNames = Array.from(el.files || []).map(f => f.name);
+
+        if (fileNames.length === 0) {
+            return;
+        }
+
+        sendAction(el, 'sendKeys', {
+            value: fileNames.join('\n'),
+            files: fileNames
         });
 
         document.recorded_actions.push([
             'cho_f',
             selector,
-            el.value || '',
+            fileNames.join('\n'),
             now
         ]);
 

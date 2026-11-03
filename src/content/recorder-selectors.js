@@ -179,6 +179,19 @@ function normalizeClickTarget(el) {
 
 }
 
+function isFileInput(el) {
+    return el instanceof Element
+        && el.tagName === 'INPUT'
+        && (el.getAttribute('type') || '').toLowerCase() === 'file';
+}
+
+// Returns the <input type="file"> opened by a click on `el` (the input itself or a label bound to it), else null
+function getFileInputForClick(el) {
+    if (isFileInput(el)) return el;
+    const label = el instanceof Element ? el.closest('label') : null;
+    return label && isFileInput(label.control) ? label.control : null;
+}
+
 function findClickableAncestor(el) {
     let cur = el;
 
